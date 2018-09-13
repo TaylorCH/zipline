@@ -113,15 +113,10 @@ class HDF5DailyBarWriter(object):
             )
 
             # Write start and end dates for each sid.
-            start_dates, end_dates = compute_asset_lifetimes(frame)
+            start_date_ixs, end_date_ixs = compute_asset_lifetimes(frame)
 
-            # h5py does not support datetimes, so they need to be stored
-            # as integers.
-            start_dates = start_dates.astype(np.int64)
-            end_dates = end_dates.astype(np.int64)
-
-            lifetimes_group.create_dataset(START_DATE, data=start_dates)
-            lifetimes_group.create_dataset(END_DATE, data=end_dates)
+            lifetimes_group.create_dataset(START_DATE, data=start_date_ixs)
+            lifetimes_group.create_dataset(END_DATE, data=end_date_ixs)
 
             for field in (OPEN, HIGH, LOW, CLOSE, VOLUME):
                 data = coerce_to_uint32(
@@ -160,24 +155,17 @@ def compute_asset_lifetimes(frame):
 
     Returns
     -------
-    start_dates : np.array[datetime64[ns]]
-        The first date with non-nan values, for each sid.
-    end_dates : np.array[datetime64[ns]]
-        The last date with non-nan values, for each sid.
+    start_date_ixs : np.array[int64]
+        The index of the first date with non-nan values, for each sid.
+    end_date_ixs : np.array[int64]
+        The index of the last date with non-nan values, for each sid.
     """
-    unstacked_closes = frame[CLOSE].unstack()
+    is_null_matrix = frame[CLOSE].unstack().isnull().values
 
-    start_dates = unstacked_closes.apply(
-        pd.Series.first_valid_index,
-        axis='columns',
-    ).values
+    start_date_ixs = is_null_matrix.argmin(axis=1)
+    end_date_ixs = is_null_matrix[::-1].argmin(axis=1)
 
-    end_dates = unstacked_closes.apply(
-        pd.Series.last_valid_index,
-        axis='columns',
-    ).values
-
-    return start_dates, end_dates
+    return start_date_ixs, end_date_ixs
 
 
 def convert_price_with_scaling_factor(a, scaling_factor):
@@ -282,13 +270,11 @@ class HDF5DailyBarReader(SessionBarReader):
 
     @lazyval
     def asset_start_dates(self):
-        start_dates = self._country_group[LIFETIMES][START_DATE][:]
-        return start_dates.astype('datetime64[ns]')
+        return self.dates[self._country_group[LIFETIMES][START_DATE][:]]
 
     @lazyval
     def asset_end_dates(self):
-        end_dates = self._country_group[LIFETIMES][END_DATE][:]
-        return end_dates.astype('datetime64[ns]')
+        return self.dates[self._country_group[LIFETIMES][END_DATE][:]]
 
     @property
     def last_available_dt(self):
