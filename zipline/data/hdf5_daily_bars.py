@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from six.moves import reduce
 
+from zipline.data.bar_reader import NoDataBeforeDate, NoDataAfterDate
 from zipline.data.session_bars import SessionBarReader
 from zipline.utils.memoize import lazyval
 
@@ -15,6 +16,7 @@ log = logbook.Logger('HDF5DailyBars')
 
 DATA = 'data'
 INDEX = 'index'
+LIFETIMES = 'lifetimes'
 
 SCALING_FACTOR = 'scaling_factor'
 
@@ -26,6 +28,9 @@ VOLUME = 'volume'
 
 DAY = 'day'
 SID = 'sid'
+
+START_DATE = 'start_date'
+END_DATE = 'end_date'
 
 
 scaling_factors = {
@@ -87,10 +92,12 @@ class HDF5DailyBarWriter(object):
 
             data_group = country_group.create_group(DATA)
             index_group = country_group.create_group(INDEX)
+            lifetimes_group = country_group.create_group(LIFETIMES)
 
             # Sort rows by sid, then by date.
             frame = frame.sort_index()
 
+            # Write sid and date indices.
             sids = frame.index.levels[0].values
             index_group.create_dataset(SID, data=sids)
 
@@ -104,6 +111,17 @@ class HDF5DailyBarWriter(object):
                 index_group.name,
                 self._filename,
             )
+
+            # Write start and end dates for each sid.
+            start_dates, end_dates = compute_asset_lifetimes(frame)
+
+            # h5py does not support datetimes, so they need to be stored
+            # as integers.
+            start_dates = start_dates.astype(np.int64)
+            end_dates = end_dates.astype(np.int64)
+
+            lifetimes_group.create_dataset(START_DATE, data=start_dates)
+            lifetimes_group.create_dataset(END_DATE, data=end_dates)
 
             for field in (OPEN, HIGH, LOW, CLOSE, VOLUME):
                 data = coerce_to_uint32(
@@ -130,6 +148,36 @@ class HDF5DailyBarWriter(object):
                 )
 
         return self._h5_file(mode='r')
+
+
+def compute_asset_lifetimes(frame):
+    """
+    Parameters
+    ----------
+    frame : pd.DataFrame
+        A dataframe of OHLCV data with a (sids, dates) index, as passed
+        to write().
+
+    Returns
+    -------
+    start_dates : np.array[datetime64[ns]]
+        The first date with non-nan values, for each sid.
+    end_dates : np.array[datetime64[ns]]
+        The last date with non-nan values, for each sid.
+    """
+    unstacked_closes = frame[CLOSE].unstack()
+
+    start_dates = unstacked_closes.apply(
+        pd.Series.first_valid_index,
+        axis='columns',
+    ).values
+
+    end_dates = unstacked_closes.apply(
+        pd.Series.last_valid_index,
+        axis='columns',
+    ).values
+
+    return start_dates, end_dates
 
 
 def convert_price_with_scaling_factor(a, scaling_factor):
@@ -232,6 +280,16 @@ class HDF5DailyBarReader(SessionBarReader):
         sids = self._country_group[INDEX][SID][:]
         return sids.astype(int)
 
+    @lazyval
+    def asset_start_dates(self):
+        start_dates = self._country_group[LIFETIMES][START_DATE][:]
+        return start_dates.astype('datetime64[ns]')
+
+    @lazyval
+    def asset_end_dates(self):
+        end_dates = self._country_group[LIFETIMES][END_DATE][:]
+        return end_dates.astype('datetime64[ns]')
+
     @property
     def last_available_dt(self):
         """
@@ -303,9 +361,22 @@ class HDF5DailyBarReader(SessionBarReader):
         sid_ix = self.sids.searchsorted(sid)
         dt_ix = self.dates.searchsorted(dt.asm8)
 
-        return self._postprocessors[field](
+        value = self._postprocessors[field](
             self._country_group[DATA][field][sid_ix, dt_ix]
         )
+
+        # When the value is nan, this dt may be outside the asset's lifetime.
+        # If that's the case, the proper NoDataOnDate exception is raised.
+        # Otherwise (when there's just a hole in the middle of the data), the
+        # nan is returned.
+        if np.isnan(value):
+            if dt.asm8 < self.asset_start_dates[sid_ix]:
+                raise NoDataBeforeDate()
+
+            if dt.asm8 > self.asset_start_dates[sid_ix]:
+                raise NoDataAfterDate()
+
+        return value
 
     def get_last_traded_dt(self, asset, dt):
         """

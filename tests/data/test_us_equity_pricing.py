@@ -258,6 +258,16 @@ class _DailyBarsTestCase(WithEquityDailyBarData, ZiplineTestCase):
                                   'volume')
         self.assertEqual(109631, volume)
 
+    def test_unadjusted_get_value_no_data(self):
+        reader = self.daily_bar_reader
+        # before
+        with self.assertRaises(NoDataBeforeDate):
+            reader.get_value(2, Timestamp('2015-06-08', tz='UTC'), 'close')
+
+        # after
+        with self.assertRaises(NoDataAfterDate):
+            reader.get_value(4, Timestamp('2015-06-16', tz='UTC'), 'close')
+
 
 class BcolzDailyBarTestCase(WithBcolzEquityDailyBarReader, _DailyBarsTestCase):
     @classmethod
@@ -337,17 +347,6 @@ class BcolzDailyBarTestCase(WithBcolzEquityDailyBarReader, _DailyBarsTestCase):
             self.sessions,
             sessions
         )
-
-    def test_unadjusted_get_value_no_data(self):
-        table = self.bcolz_daily_bar_ctable
-        reader = BcolzDailyBarReader(table)
-        # before
-        with self.assertRaises(NoDataBeforeDate):
-            reader.get_value(2, Timestamp('2015-06-08', tz='UTC'), 'close')
-
-        # after
-        with self.assertRaises(NoDataAfterDate):
-            reader.get_value(4, Timestamp('2015-06-16', tz='UTC'), 'close')
 
     def test_unadjusted_get_value_empty_value(self):
         reader = self.bcolz_equity_daily_bar_reader
