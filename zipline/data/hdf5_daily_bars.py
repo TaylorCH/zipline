@@ -85,7 +85,8 @@ class HDF5DailyBarWriter(object):
         country_code : str
             The ISO 3166 alpha-2 country code for this country.
         frame : pd.DataFrame
-            A dataframe of OHLCV data with a (sids, dates) index.
+            A dataframe of OHLCV data with a row for each sid and a
+            column for each date.
         """
         with self._h5_file(mode='a') as h5_file:
             country_group = h5_file.create_group(country_code)
@@ -94,16 +95,17 @@ class HDF5DailyBarWriter(object):
             index_group = country_group.create_group(INDEX)
             lifetimes_group = country_group.create_group(LIFETIMES)
 
-            # Sort rows by sid, then by date.
-            frame = frame.sort_index()
+            # Sort rows by increasing sid, and columns by increasing date.
+            frame.sort_index(inplace=True)
+            frame.sort_index(axis='columns', inplace=True)
 
             # Write sid and date indices.
-            sids = frame.index.levels[0].values
+            sids = frame.index.values
             index_group.create_dataset(SID, data=sids)
 
             # h5py does not support datetimes, so they need to be stored
             # as integers.
-            days = frame.index.levels[1].astype(np.int64)
+            days = frame.columns.levels[1].values.astype(np.int64)
             index_group.create_dataset(DAY, data=days)
 
             log.debug(
@@ -120,7 +122,7 @@ class HDF5DailyBarWriter(object):
 
             for field in (OPEN, HIGH, LOW, CLOSE, VOLUME):
                 data = coerce_to_uint32(
-                    frame[field].unstack().fillna(0).values,
+                    frame[field].fillna(0).values,
                     field,
                 )
 
@@ -160,7 +162,7 @@ def compute_asset_lifetimes(frame):
     end_date_ixs : np.array[int64]
         The index of the last date with non-nan values, for each sid.
     """
-    is_null_matrix = frame[CLOSE].unstack().isnull().values
+    is_null_matrix = frame[CLOSE].isnull().values
 
     start_date_ixs = is_null_matrix.argmin(axis=1)
     end_date_ixs = is_null_matrix[::-1].argmin(axis=1)

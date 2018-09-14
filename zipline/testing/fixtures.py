@@ -1191,13 +1191,14 @@ class WithHDF5EquityDailyBarReader(WithEquityDailyBarData, WithTmpDir):
 
         cls.hdf5_daily_bar_path = p = cls.make_hdf5_daily_bar_path()
 
+        # Reshape to have a row for each sid, and a column for each date.
         frame = pd.concat([
             (df.reset_index()
                .rename(columns={'index': 'date'})
                .assign(sid=sid)
                .set_index(['sid', 'date']))
             for sid, df in cls.make_equity_daily_bar_data()
-        ])
+        ]).unstack()
 
         f = HDF5DailyBarWriter(p, date_chunk_size=30).write(
             cls.HDF5_DAILY_BAR_COUNTRY_CODE,
